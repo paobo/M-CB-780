@@ -1,20 +1,40 @@
-gpio.setup(11,1)   ----INA   电机阀控制脚
-gpio.setup(8,1) -------INB   电机阀控制脚
+local lbsLoc2 = require("lbsLoc2") ------定位库
+---gpio.setup(13,1)
+gpio.setup(11, 1) ----INA   电机阀控制脚
+gpio.setup(8, 1) -------INB   电机阀控制脚
 adc.open(adc.CH_VBAT)
 local mybat = adc.get(adc.CH_VBAT)
 adc.close(adc.CH_VBAT)
-
+---pm.power(pm.WORK_MODE,1)
+local lat, lng, t
 if fskv.get("bauds") == nil then
     fskv.set("bauds", 9600) ------- 设置默认波特率
-    fskv.set("uptime", 60) ------- 设置自动上传周期，默认60分钟【单位分钟】
-    fskv.set("surplus",0)  -------- 设置预付费表剩余量
-    fskv.set("valstate",5) -------  设置阀门状态，1开，2关，3卡住
-    fskv.set("rebootnum", 3)
+    fskv.set("uptime", 480) ------- 设置自动上传周期，默认60分钟【单位分钟】
+    fskv.set("recharsum", 0) -------- + 设置预付费表充值累计数
+    fskv.set("alarmint", 1000) ----- + 预警量 ALARMINT
+    fskv.set("valstate", 5) -------  设置阀门状态，11开，22关，33卡住
+    fskv.set("rebootnum", 4)
+    fskv.set("close_num", 0) --------余额用完关阀及提醒次数
+    fskv.set("alarmnum", 0) -------- 余额预警次数
+    fskv.set("resetcount",0)  ---------初始化次数
+    --fskv.set("playmode", 1) --------- 付费方式，1 为后付费，2 为预付费
 end
 
-local sws = nil
+fskv.set("valstate", valstate)
+-- pm.power(pm.WORK_MODE,1)
+local valstate = fskv.get("valstate") -------阀门状态
+local lat, lng, t
+---local close_num = fskv.get("close_num")
+local close_num = 0
+---=local alarmnum = fskv.get("alarmnum")
+local resetcount = fskv.get("resetcount")
+local alarmnum = 0
 local dev_data = nil
 local meter_data = nil
+local remain = 0 --------预付费剩余值
+---local playmode = fskv.get("playmode")
+---local alarmint = fskv.get("alarmint")
+---local recharsum = fskv.get("recharsum")
 local rebootnum = fskv.get("rebootnum")
 local mqtt_host = "mqtt.yihuan100.com"
 local mqtt_port = 1883
@@ -22,95 +42,41 @@ local mqtt_isssl = false
 local client_id = "AIR780E-" .. mobile.imei(0)
 local user_name = "test001"
 local password = "test1234"
-local meterno = nil  -------水表表号
----local valstate = fskv.get("valstate")  -------阀门状态
-local valstate = fskv.get("valstate")  -------阀门状态
-if valstate == 1 then   -------阀门状态为开
-    if gpio.get(3) == 0 and gpio.get(6) == 0 then  -----阀门卡住gpio指示
-        local timeout_k = 30
-        local startTime_k = os.clock()
-        while gpio.get(3) == 0 do    ---电机未开到位  gpio3为行程开关到位指示 Y
-            gpio.setup(11,1)   ----INA   电机阀控制脚
-            gpio.setup(8,0) -------INB   电机阀控制脚
-            gpio.setup(12,0) ------------电机动作指示灯亮
-            if os.clock() - startTime_k > timeout_k then  -----超时退出
-                break
-            end
-        end
-        if gpio.get(3) == 0 then  
-            valstate = 3 -------最终电机未开到位
-            fskv.set("valstate",valstate)
-        end
-        gpio.setup(8,1) ------- INB   电机阀控制脚
-        gpio.setup(12,1) ------------ 电机动作指示灯灭
-    end
-end
-
-if valstate == 2 then   -------阀门状态为关
-    local timeout_g = 30
-    local startTime_g = os.clock()
-    while gpio.get(6) == 0 do    ---电机未关到位  gpio6为 B
-        gpio.setup(11,0)   ----INA   电机阀控制脚
-        gpio.setup(8,1) -------INB   电机阀控制脚
-        gpio.setup(12,0) ------------ 电机动作指示灯亮
-        if os.clock() - startTime_g > timeout_g then  -----超时退出
-            break
-        end
-    end
-    if gpio.get(6) == 0 then
-        valstate = 3 -------最终电机未关到位
-        fskv.set("valstate",valstate)
-    end
-    gpio.setup(11,1) -------INA   电机阀控制脚
-    gpio.setup(12,1) ------------电机动作指示灯灭
-end
-
-
-if fskv.get("valstate") == 5 then
-    if gpio.get(3) == 1 and gpio.get(6) == 0 then  -----阀门开到位gpio指示
-        valstate = 1
-    end
-    if gpio.get(3) == 0 and gpio.get(6) == 1 then  -----阀门关到位gpio指示
-        valstate = 2
-    end
-    if gpio.get(3) == 0 and gpio.get(6) == 0 then  -----阀门卡住gpio指示
-        valstate = 3
-    end
-end
-fskv.set("valstate",valstate)
----log.info("zt",valstate)
-
+local meterno = nil -------水表表号
+---local recharsum = fskv.get("recharsum")
+local valstate = fskv.get("valstate") -------阀门状态
 local alldata = nil
-local metersum = ""        ----水表表头的实际累计数【表头读数】
+local metersum = "" ----水表表头的实际累计数【表头读数】
 local pub_topic = "yomtey/prod/s/" .. mobile.imei(0)  ----mqtt发送主题
 local sub_topic = "yomtey/prod/p/" .. mobile.imei(0)  ----mqtt订阅主题
-
 local mqttc = nil
 local bauds = fskv.get("bauds") --------获得波特率
 local uptime = fskv.get("uptime") --------获得自动上传周期
-local device_id = mobile.imei(0)  ------获得序列号【imei号】
-local ccid = mobile.iccid(0)      ------获得iccid号
-local table_baud = {9600,4800,2400}   ------波特率范围
+local device_id = mobile.imei(0) ------获得序列号【imei号】
+local ccid = mobile.iccid(0) ------获得iccid号
+local table_baud = {9600, 4800, 2400} ------波特率范围
 local i = 1
-gpio.setup(11,0)   ----INA   电机阀控制脚
-gpio.setup(8,0) -------INB   电机阀控制脚
--- local wake_delay = 15000
--- if reason == 2 then
---     wake_delay = 25000
--- end
+if fskv.get("valstate") == 5 then
+    if gpio.get(3) == 1 and gpio.get(6) == 0 then -----阀门开到位gpio指示
+        valstate = 11
+    end
+    if gpio.get(3) == 0 and gpio.get(6) == 1 then -----阀门关到位gpio指示
+        valstate = 22
+    end
+    if gpio.get(3) == 0 and gpio.get(6) == 0 then -----阀门卡住gpio指示
+        valstate = 44
+    end
+end
+gpio.setup(11, 0) ----INA   电机阀控制脚
+gpio.setup(8, 0) -------INB   电机阀控制脚
+
 uart.setup(1, bauds, 8, 1, uart.EVEN)
 
 sys.taskInit(function()
     gpio.setup(23, nil)
     gpio.close(12)
-    gpio.close(13)
-
-    gpio.close(33) --如果功耗偏高，开始尝试关闭WAKEUPPAD1
-    gpio.close(32) -- 如果功耗偏高，开始尝试关闭WAKEUPPAD0
-    --gpio.setup(32, function() end, gpio.PULLUP)
     gpio.close(35) -- 这里pwrkey接地才需要，不接地通过按键控制的不需要
     log.info("bauds", bauds)
-    --uart.setup(1, bauds, 8, 1, uart.EVEN)
     sys.wait(100)
     -- FE FE FE 68 10 AA AA AA AA AA AA AA 01 03 90 1F 01 D2 16------万能读表指令
     uart.write(1,
@@ -119,12 +85,12 @@ sys.taskInit(function()
                            0x16))
     sys.wait(500)
 
-    --uart.close(1)
-    --meterno = meterno:match("^[%s]*(.-)[%s]*$")----
+    -- uart.close(1)
+    -- meterno = meterno:match("^[%s]*(.-)[%s]*$")----
     log.info("bh", meterno)
-    if  meterno == nil then
+    if meterno == nil then
         log.info("cs", rebootnum)
-        if rebootnum <= 3 then
+        if rebootnum <= 4 then
             log.info("reboot", rebootnum)
             uart.rxClear(1)
             rebootnum = rebootnum + 1
@@ -147,20 +113,13 @@ sys.taskInit(function()
         end
     end
 
-    
-
     sys.waitUntil("IP_READY", 30000)
     sys.publish("net_ready", device_id)
     local ret = sys.waitUntil("net_ready")
-    local mycsq = mobile.rsrp()
-    local myrsrq = mobile.rsrq()
-    local myrssi = mobile.rssi()
-    local mysinr = mobile.snr()
-    local yy = {DEVTYPE = "M2", SN = device_id, INFO = 4}  ---mqtt遗言数据
-    local will_str = json.encode(yy)      ---mqtt遗言json格式
+
+    local yy = {DEVTYPE = "M2", SN = device_id, INFO = 4} ---mqtt遗言数据
+    local will_str = json.encode(yy) ---mqtt遗言json格式
     
-
-
     if meterno == nil then ----------------------------如果未能获得表号，说明水表接线或水表硬件故障
         if rebootnum > 3 then
             rebootnum = 0
@@ -168,25 +127,26 @@ sys.taskInit(function()
         end
         local kk = {DEVTYPE = "M2", SN = device_id, INFO = 3}
         dev_data = json.encode(kk)
-
-        
     else
+        upCellInfo()
         local dev_data0 = {
             DEVTYPE = "M0",
             SN = device_id,
             ICCID = ccid,
             --ALLDATA = alldata,
             METERNO = meterno,
-            VER = "CD780-20240320",
+            VER = "MCD618-20250402",
             UPTIME = uptime,
             REASON = reason,
-            VALSTATE = valstate,
+            VALSTATE = fskv.get("valstate"),
             BATT = mybat,
+            LAT = lat,
+            LNG = lng,
             BAUD = bauds,
-            RSRP = mycsq,
-            RSRQ = myrsrq,
-            RSSI = myrssi,
-            SINR = mysinr,
+            RSRP = mobile.rsrp(),
+            RSRQ = mobile.rsrq(),
+            RSSI = mobile.rssi(),
+            SINR = mobile.snr(),
             FACT = 2
         }
         dev_data = json.encode(dev_data0)
@@ -194,7 +154,7 @@ sys.taskInit(function()
             DEVTYPE = "M1",
             SN = device_id,
             METERSUM = metersum,
-            PAYMODE = 2
+            PAYMODE = 1
         }
         meter_data = json.encode(meter_data0)
     end
@@ -243,15 +203,38 @@ sys.taskInit(function()   ------周期上传mqtt数据
         if mqttc and mqttc:ready() then
             uart.write(1,string.char(0xFE, 0xFE, 0xFE, 0x68, 0x10, 0xAA, 0xAA, 0xAA, 0xAA,0xAA, 0xAA, 0xAA, 0x01, 0x03, 0x90, 0x1F, 0x01, 0xD2, 0x16))
             if metersum ~= nil then
+                upCellInfo()
+                local dev_data0 = {
+                    DEVTYPE = "M0",
+                    SN = device_id,
+                    ICCID = ccid,
+                    --ALLDATA = alldata,
+                    METERNO = meterno,
+                    VER = "MCD618-20250402",
+                    UPTIME = uptime,
+                    REASON = reason,
+                    VALSTATE = fskv.get("valstate"),
+                    BATT = mybat,
+                    LAT = lat,
+                    LNG = lng,
+                    BAUD = bauds,
+                    RSRP = mobile.rsrp(),
+                    RSRQ = mobile.rsrq(),
+                    RSSI = mobile.rssi(),
+                    SINR = mobile.snr(),
+                    FACT = 2
+                }
+                dev_data = json.encode(dev_data0)
                 local meter_data0 = {
                     DEVTYPE = "M1",
                     SN = device_id,
                     METERSUM = metersum,
-                    VALSTATE = valstate,
-                    PAYMODE = 2
+                    --VALSTATE = valstate,
+                    PAYMODE = 1
                 }
                 meter_data = json.encode(meter_data0)
             local pkgid = mqttc:publish(pub_topic, meter_data)
+            local pkfid = mqttc:publish(pub_topic, dev_data)
             end
         end
     end
@@ -304,12 +287,13 @@ sys.subscribe("mqtt_payload",function(topic, payload)
                     SN = device_id,
                     METERSUM = metersum,
                     FUNCCODE = "A2",
+                    UPDATA = metersum
                     }
                 local lj = json.encode(lj0)
                     mqttc:publish(pub_topic, lj)
                 end
             end
-            if string.sub(payload, 18, 19) == "A3" then --  获取设备参数   D3867713070630363A3  ----------
+--[[             if string.sub(payload, 18, 19) == "A3" then --  获取设备参数   D3867713070630363A3  ----------
                 adc.open(adc.CH_VBAT)
                 mybat = adc.get(adc.CH_VBAT)
                 adc.close(adc.CH_VBAT)
@@ -336,51 +320,17 @@ sys.subscribe("mqtt_payload",function(topic, payload)
                 dev_data = json.encode(dev_data0)
                 log.info("dev_data",dev_data)
                 mqttc:publish(pub_topic, dev_data)
-            end
+            end ]]
             if string.sub(payload, 18, 19) == "C5" then --  开阀或关阀   D3867713070630363C50000000001  ----------
-
-                if string.sub(payload, 20, 29) == "0000000001" then  ------强制开阀
-                    local timeout = 120
-                    local startTime = os.clock()
-                    while gpio.get(3) == 0 do    ---电机未开到位  gpio3为行程开关到位指示 Y
-                        gpio.setup(11,1)   ----INA   电机阀控制脚
-                        gpio.setup(8,0) -------INB   电机阀控制脚
-                        gpio.setup(12,0) ------------电机动作指示灯亮
-                        if os.clock() - startTime > timeout then  -----超时退出
-                            break
-                        end
+                bup0 = string.sub(payload, 20, #payload)
+                if bup0 == "11" then ------强制开阀
+                    if fskv.get("valstate") ~= 33 then ------如果不是欠费关阀
+                        Switch_proc("open")
                     end
-                    if gpio.get(3) == 0 then  
-                        sws = "k1"  -------最终电机未开到位
-                    else
-                        sws = "k0"  -------最终电机已开到位
-                    end
-                    gpio.setup(8,1) -------INB   电机阀控制脚
-                    gpio.setup(12,1) ------------电机动作指示灯灭
-                    sys.publish("do_switch",sws)
                 end
-
-                if string.sub(payload, 20, 29) == "0000000002" then  ------强制关阀
-                    local timeout0 = 30
-                    local startTime0 = os.clock()
-                    while gpio.get(6) == 0 do    ---电机未关到位  gpio6为 B
-                        gpio.setup(11,0)   ----INA   电机阀控制脚
-                        gpio.setup(8,1) -------INB   电机阀控制脚
-                        gpio.setup(12,0) ------------ 电机动作指示灯亮
-                        if os.clock() - startTime0 > timeout0 then  -----超时退出
-                            break
-                        end
-                    end
-                    if gpio.get(6) == 0 then  
-                        sws = "g1"  -------最终电机未关到位
-                    else
-                        sws = "g0"  -------最终电机已关到位
-                    end
-                    gpio.setup(11,1) -------INA   电机阀控制脚
-                    gpio.setup(12,1) ------------电机动作指示灯灭
-                    sys.publish("do_switch",sws)
+                if bup0 == "22" then ------强制关阀
+                    Switch_proc("close")
                 end
-
             end
         end
     end
@@ -389,53 +339,128 @@ end)
 
 
 
+sys.subscribe("do_switch", function(sws) ----------捕获开关阀是否成功
 
-sys.subscribe("do_switch",function(sws)   ----------捕获开关阀是否成功
-    local moto_status0 = nil  
-    if sws == "k0" then  -------最终电机已开到位
-        valstate = 1
-        moto_status0 ={
-            DEVTYPE = "M3",
-            SN = device_id,
-            FUNCCODE = "C5",
-            SWITCH ="1"
-        }
+    local moto_status0 = nil
+    log.info("sws", sws)
+    if sws == "k0" or sws == "ak0" then -------最终电机已开到位
+        valstate = 11
     end
-    if sws == "k1" then  -------最终电机未开到位
-        valstate = 3
-        moto_status0 ={
-            DEVTYPE = "M3",
-            SN = device_id,
-            FUNCCODE = "C5",
-            SWITCH ="3"
-        }
+    if sws == "k1" or sws == "ak1" then -------最终电机未开到位
+        valstate = 44
     end
-    if sws == "g0" then  -------最终电机已关到位
-        valstate = 2
-        moto_status0 ={
-            DEVTYPE = "M3",
-            SN = device_id,
-            FUNCCODE = "C5",
-            SWITCH ="2"
-        }
+    if sws == "g0" then -------最终电机已关到位
+        valstate = 22
     end
-    if sws == "k1" then  -------最终电机未关到位
-        valstate = 3
-        moto_status0 ={
-            DEVTYPE = "M3",
-            SN = device_id,
-            FUNCCODE = "C5",
-            SWITCH ="3"
-        }
+    if sws == "ag0" then -------最终电机已关到位
+        valstate = 33
     end
-    fskv.set("valstate",valstate)
+    if sws == "g1" or sws == "ag1" then -------最终电机未关到位
+        valstate = 44
+    end
+    fskv.set("valstate", valstate)
+    valstate = fskv.get("valstate")
+    log.info("vvv", valstate)
+    moto_status0 = {
+        DEVTYPE = "M3",
+        SN = device_id,
+        FUNCCODE = "C5",
+        SWITCH = valstate
+        --UPDATA = valstate
+    }
     local moto_status = json.encode(moto_status0)
-    mqttc:publish(pub_topic, moto_status)     ------发送到MQTT
+    mqttc:publish(pub_topic, moto_status) ------发送到MQTT
 end)
 
+function Switch_proc(strs) ------开关阀函数
+    sys.taskInit(function()
+        local sws = nil
+        local timeout = 180
+        ---local startTime = os.clock()
+        local startTime = os.time()
+        if strs == "open" then
+            gpio.setup(11, 1) ----INA   电机阀控制脚
+            gpio.setup(8, 0) -------INB   电机阀控制脚
+            gpio.setup(12, 0) ------------电机动作指示灯亮
+            while gpio.get(3) == 0 do --- 如果电机未开到位  gpio3为行程开关到位指示 Y
+                if os.time() - startTime > timeout then -----超时退出
+                    break
+                end
+                sys.wait(100)
+            end
+            if gpio.get(3) == 0 then
+                sws = "k1" -------最终电机未开到位
+            else
+                sws = "k0" -------最终电机已开到位
+            end
+            gpio.setup(8, 1) -------INB   电机阀控制脚
+            gpio.setup(12, 1) ------------电机动作指示灯灭
+        end
+        if strs == "autoopen" then
+            gpio.setup(11, 1) ----INA   电机阀控制脚
+            gpio.setup(8, 0) -------INB   电机阀控制脚
+            gpio.setup(12, 0) ------------电机动作指示灯亮
+            while gpio.get(3) == 0 do ---电机未开到位  gpio3为行程开关到位指示 Y
+                if os.time() - startTime > timeout then -----超时退出
+                    break
+                end
+                sys.wait(100)
+            end
+            if gpio.get(3) == 0 then
+                sws = "ak1" -------最终电机未开到位
+            else
+                sws = "ak0" -------最终电机已开到位
+            end
+            gpio.setup(8, 1) -------INB   电机阀控制脚
+            gpio.setup(12, 1) ------------电机动作指示灯灭
+        end
+        if strs == "close" then
+            gpio.setup(11, 0) ----INA   电机阀控制脚
+            gpio.setup(8, 1) -------INB   电机阀控制脚
+            gpio.setup(12, 0) ------------ 电机动作指示灯亮
+            while gpio.get(6) == 0 do ---电机未关到位  gpio6为 B
+                if os.time() - startTime > timeout then -----超时退出
+                    break
+                end
+                sys.wait(100)
+            end
+            if gpio.get(6) == 0 then
+                sws = "g1" -------最终电机未关到位
+            else
+                sws = "g0" -------最终电机已关到位
+            end
+            gpio.setup(11, 1) -------INA   电机阀控制脚
+            gpio.setup(12, 1) ------------电机动作指示灯灭
+        end
+        if strs == "autoclose" then
+            gpio.setup(11, 0) ----INA   电机阀控制脚
+            gpio.setup(8, 1) -------INB   电机阀控制脚
+            gpio.setup(12, 0) ------------ 电机动作指示灯亮
+            while gpio.get(6) == 0 do ---电机未关到位  gpio6为 B
+                if os.time() - startTime > timeout then -----超时退出
+                    break
+                end
+                sys.wait(100)
+            end
+            if gpio.get(6) == 0 then
+                sws = "ag1" -------最终电机未关到位
+            else
+                sws = "ag0" -------最终电机已关到位
+            end
+            gpio.setup(11, 1) -------INA   电机阀控制脚
+            gpio.setup(12, 1) ------------电机动作指示灯灭
+        end
+        ---pm.power(pm.WORK_MODE,1)
+        sys.publish("do_switch", sws)
+    end)
+end
 
 
-local function Get_device_info(strss)    -----------获取设备信息或水表流量信息函数
+
+
+
+
+--[[ local function Get_device_info(strss)    -----------获取设备信息或水表流量信息函数
     local deviceinfo = nil
     if strss == "device" then
         adc.open(adc.CH_VBAT)
@@ -468,39 +493,56 @@ local function Get_device_info(strss)    -----------获取设备信息或水表�
         deviceinfo = json.encode(meter_data0)
     end
 
-end
+end ]]
 
 
 
 local function proc_get_meterno(strs)
-    local k1 = string.sub(strs, 5, 18) --------获得水表表号原始数据
+    local k1 = string.sub(strs, 5, 18) --------获得水表表号原始数据6810891070800000008116901F01000000002C000000002C0000000000000000FF9F16
     local tmps = ""
     local tmplen = #k1 / 2 -- 获得字符长度
     for i = tmplen, 1, -1 do tmps = tmps .. string.sub(k1, 2 * i - 1, 2 * i) end
     return tmps
     -- local k2 = string.sub(strs,36,43) --------获得水表累计原始数据
+    -- log.info("meterno",tmps)
 end
 
 local function proc_get_metersum(strs)
     local k2 = string.sub(strs, 29, 36) --------获得水表累计原始数据  6810670517240000008116901F01000300002C000300002C0000000000000000FFC316
-
     local tmps1 = ""
+    local tmps2 = ""
     local tmplen1 = #k2 / 2 -- 获得字符长度
     for i = tmplen1, 1, -1 do
         tmps1 = tmps1 .. string.sub(k2, 2 * i - 1, 2 * i)
     end
-    --local str = "00123" -- 要处理的字符串
-    --= string.gsub(tmps1, "^%z+", "") --- 使用正则表达式将开头连续的零删除
-    local tmps2 = tmps1:match("^[0]*(.-)[%s]*$")
-    log.info("tmps1",tmps1)
-    log.info("tmps2",tmps2)
-    --tmps2 = tonumber(tmps2*10)   -------- DN300特殊表具*100，其他*10
+    -- local str = "00123" -- 要处理的字符串
+    -- = string.gsub(tmps1, "^%z+", "") --- 使用正则表达式将开头连续的零删除
+    if tonumber(tmps1) ~= 0 then
+        tmps2 = tmps1:match("^[0]*(.-)[%s]*$") --- 使用正则表达式将开头连续的零删除
+    else
+        tmps2 = tmps1
+    end
+
+    log.info("tmps1", tmps1)
+    log.info("tmps2", tmps2)
+    ---- tmps2 = tonumber(tmps2)*10   -------- DN300特殊表具*100，其他*10
     if #tmps2 < 9 then
         local jjj = 9 - #tmps2
-        tmps2 = string.rep("0",jjj) .. tmps2.."0"    ----不足10位的累计，前面补零直到满足10位
+        tmps2 = string.rep("0", jjj) .. tmps2 .. "0" ----不足10位的累计，前面补零直到满足10位
     end
     return tmps2
     -- local k2 = string.sub(strs,36,43) -------- 获得水表累计原始数据
+end
+
+function upCellInfo() -------基站定位函数
+    mobile.reqCellInfo(15)
+    sys.waitUntil("CELL_INFO_UPDATE", 10000)
+    lat, lng, t = lbsLoc2.request(5000, nil, nil, true)
+    if lat ~= nil then
+        return lat, lng
+    else
+        return nil
+    end
 end
 
 uart.on(1, "receive", function(id, len)
@@ -509,15 +551,15 @@ uart.on(1, "receive", function(id, len)
         s = uart.read(id, len)
         alldata = s:toHex()
         if #s > 0 then -- #s 是取字符串的长度
-            
+
             if string.sub(s:toHex(), 1, 4) == "FEFE" then
                 local ss = string.gsub(s:toHex(), "FE", "")
-                log.info("ss",ss)
-                --if string.sub(ss,23,16) == "901F" then
+                log.info("ss", ss)
+                if string.sub(ss, 23, 26) == "901F" then -- 6810891070800000008116901F01000000002C000000002C0000000000000000FF9F16
                     meterno = proc_get_meterno(ss)
                     metersum = proc_get_metersum(ss)
                     fls(12)
-                --end
+                end
             end
         end
         if #s == len then break end
