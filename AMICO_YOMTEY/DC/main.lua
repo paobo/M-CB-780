@@ -2,12 +2,12 @@ PROJECT = "M-CB-780"
 VERSION = "1.0.2"    ------------6系列代表用粤镁特的项目标识烧录恒通的代码
 ----VERSION = "2.0.0"    ------------------- 深圳测试客户用户 mqtt_DC_SZ
 ---PRODUCT_KEY = "emus4VDXBdNFLPOh9soTnr4mBuI6Z5dc"   --------- 深圳测试客户用
----PRODUCT_KEY = "JacQ2Y5Kiru3nhr19tBAvGl6gNmbm8CK" ----------- 【公司演示】光电485有源带阀
+PRODUCT_KEY = "JacQ2Y5Kiru3nhr19tBAvGl6gNmbm8CK" ----------- 【公司演示】光电485有源带阀
 ---PRODUCT_KEY = "pjsuFjPr1yfs8s11pEXHJxsB4mK7T6ec" ----------- 【公司演示】光电485电池无阀
 ----PRODUCT_KEY = "m7dHQUYd4qHO3zD1JgWfjDZr5ToiHQMD" ----------【浙江恒通】光电485电池无阀
 ---PRODUCT_KEY = "q4L8GTRWjJ6dpsoKxjRjgBGdZFD8cpWA"   --------- 公司485后付费电池水表
 ---PRODUCT_KEY = "zqdsJodk0d2qWDkTHyLOc081PVBB2ZMw"   --------【公司演示】光电485有源无阀
-PRODUCT_KEY = "5ESTog01Z4dnzfLEnjKtabGoKdMZgozT"  ---------- 【公司演示】光电485有源带阀预付费
+---PRODUCT_KEY = "5ESTog01Z4dnzfLEnjKtabGoKdMZgozT"  ---------- 【公司演示】光电485有源带阀预付费
 -- sys库是标配
 _G.sys = require("sys")
 fskv.init()
@@ -40,8 +40,8 @@ sys.timerLoopStart(libfota.request, 3600000, fota_cb)
 ---require("mqtt_DC_SW")   ------【公司演示】光电485有源带阀
 ---require("mqtt_BA")
 ---require("mqtt_BA_HT")     ------【浙江恒通】光电485电池无阀
----require("mqtt_DC")
-require("mqtt_DC_SW_PRE")   ------- 【公司演示】光电485有源带阀预付费
+require("mqtt_DC_SW")
+---require("mqtt_DC_SW_PRE")   ------- 【公司演示】光电485有源带阀预付费
 ----require("google_DC_SW_PRE")   ------- 【公司演示】光电485有源带阀预付费
 ----_G.sysplus = require("sysplus")
 
