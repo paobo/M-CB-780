@@ -9,7 +9,7 @@ adc.close(adc.CH_VBAT)
 local lat, lng, t
 if fskv.get("bauds") == nil then
     fskv.set("bauds", 9600) ------- 设置默认波特率
-    fskv.set("uptime", 480) ------- 设置自动上传周期，默认60分钟【单位分钟】
+    fskv.set("uptime", 60) ------- 设置自动上传周期，默认60分钟【单位分钟】
     fskv.set("recharsum", 0) -------- + 设置预付费表充值累计数
     fskv.set("alarmint", 1000) ----- + 预警量 ALARMINT
     fskv.set("valstate", 5) -------  设置阀门状态，11开，22关，33卡住
@@ -66,6 +66,7 @@ if fskv.get("valstate") == 5 then
     if gpio.get(3) == 0 and gpio.get(6) == 0 then -----阀门卡住gpio指示
         valstate = 44
     end
+    fskv.set("valstate", valstate)
 end
 gpio.setup(11, 0) ----INA   电机阀控制脚
 gpio.setup(8, 0) -------INB   电机阀控制脚
@@ -257,26 +258,24 @@ sys.subscribe("mqtt_payload",function(topic, payload)
     fls(12)
     if payload ~= nil then
         if string.sub(payload, 1, 2) == "D3" and string.sub(payload, 3, 17) == mobile.imei(0) then
-            local bup0 = nil
+            --local bup0 = nil
             if string.sub(payload, 18, 19) == "C4" then  ------ 设置自动上传周期D3867713070630363C40000000060 D3   869020066349869   C4   60(分钟)
                 --bup0 = string.sub(payload, 20, #payload)
-                uptime = string.gsub(bup0, "^%z+", "") --- 使用正则表达式将开头连续的零删除
+                uptime = string.sub(payload, 20, #payload)
                 if tonumber(uptime) >= 1 then
-                fskv.set("uptime", uptime)
-                local upt = fskv.get("uptime")
-                local re = {
-                            DEVTYPE = "M3",
-                            SN = device_id,
-                            FUNCCODE = "C4",
-                            UPDATA = upt
-                            }
-                local REDATA = json.encode(re)
-                mqtt_client:publish(pub_topic, REDATA)
-                --local upt = fskv.get("uptime")
-                --mqttc:publish(pub_topic, "M3"..mobile.imei(0).."C4"..bup0)
+                    fskv.set("uptime", uptime)
+                    local upt = fskv.get("uptime")
+                    local re = {
+                        DEVTYPE = "M3",
+                        SN = device_id,
+                        FUNCCODE = "C4",
+                        UPDATA = upt
+                    }
+                    local REDATA = json.encode(re)
+                    mqttc:publish(pub_topic, REDATA)
                 end
             end
-            if string.sub(payload, 18, 19) == "A2" then  -------查询累计数  D3867713070630363A2----------
+            if string.sub(payload, 18, 19) == "A3" then  -------查询累计数  D3867713070630363A2----------
                 log.info("payload", payload)
                 log.info("A2", string.sub(payload, 18, 19))
                 uart.write(1,string.char(0xFE, 0xFE, 0xFE, 0x68, 0x10, 0xAA, 0xAA, 0xAA, 0xAA,0xAA, 0xAA, 0xAA, 0x01, 0x03, 0x90, 0x1F, 0x01, 0xD2, 0x16))
@@ -286,7 +285,7 @@ sys.subscribe("mqtt_payload",function(topic, payload)
                     DEVTYPE = "M3",
                     SN = device_id,
                     METERSUM = metersum,
-                    FUNCCODE = "A2",
+                    FUNCCODE = "A3",
                     UPDATA = metersum
                     }
                 local lj = json.encode(lj0)
@@ -365,8 +364,8 @@ sys.subscribe("do_switch", function(sws) ----------捕获开关阀是否成功
         DEVTYPE = "M3",
         SN = device_id,
         FUNCCODE = "C5",
-        SWITCH = valstate
-        --UPDATA = valstate
+        --SWITCH = valstate
+        UPDATA = valstate
     }
     local moto_status = json.encode(moto_status0)
     mqttc:publish(pub_topic, moto_status) ------发送到MQTT
@@ -507,7 +506,7 @@ local function proc_get_meterno(strs)
     -- log.info("meterno",tmps)
 end
 
-local function proc_get_metersum(strs)
+--[[ local function proc_get_metersum(strs)
     local k2 = string.sub(strs, 29, 36) --------获得水表累计原始数据  6810670517240000008116901F01000300002C000300002C0000000000000000FFC316
     local tmps1 = ""
     local tmps2 = ""
@@ -532,6 +531,20 @@ local function proc_get_metersum(strs)
     end
     return tmps2
     -- local k2 = string.sub(strs,36,43) -------- 获得水表累计原始数据
+end ]]
+
+local function proc_get_metersum(strs)
+    local k2 = string.sub(strs, 29, 36) --------获得水表累计原始数据
+    local tmps1 = ""
+    local tmplen1 = #k2 / 2 -- 获得字符长度
+    for i = tmplen1, 1, -1 do
+        tmps1 = tmps1 .. string.sub(k2, 2 * i - 1, 2 * i)
+    end
+    --local str = "00123" -- 要处理的字符串
+    local tmps2 = string.gsub(tmps1, "^%z+", "") -- 使用正则表达式将开头连续的零删除
+    tmps2 = tonumber(tmps2*10)   --------DN300特殊表具*100，其他*10
+    return tmps2
+    -- local k2 = string.sub(strs,36,43) --------获得水表累计原始数据
 end
 
 function upCellInfo() -------基站定位函数
@@ -555,11 +568,11 @@ uart.on(1, "receive", function(id, len)
             if string.sub(s:toHex(), 1, 4) == "FEFE" then
                 local ss = string.gsub(s:toHex(), "FE", "")
                 log.info("ss", ss)
-                if string.sub(ss, 23, 26) == "901F" then -- 6810891070800000008116901F01000000002C000000002C0000000000000000FF9F16
+                --if string.sub(ss, 23, 26) == "901F" then -- 6810891070800000008116901F01000000002C000000002C0000000000000000FF9F16
                     meterno = proc_get_meterno(ss)
                     metersum = proc_get_metersum(ss)
                     fls(12)
-                end
+                --end
             end
         end
         if #s == len then break end
